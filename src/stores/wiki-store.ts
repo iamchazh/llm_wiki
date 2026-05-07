@@ -8,6 +8,12 @@ import type { WikiProject, FileNode } from "@/types/wiki"
  * `chat_completions` for backward compatibility with pre-0.3.7 configs.
  */
 export type CustomApiMode = "chat_completions" | "anthropic_messages"
+export type ReasoningMode = "auto" | "off" | "low" | "medium" | "high" | "max" | "custom"
+
+export interface ReasoningConfig {
+  mode: ReasoningMode
+  budgetTokens?: number
+}
 
 interface LlmConfig {
   provider: "openai" | "anthropic" | "google" | "ollama" | "custom" | "minimax" | "claude-code"
@@ -17,11 +23,34 @@ interface LlmConfig {
   customEndpoint: string
   maxContextSize: number // max context window in characters
   apiMode?: CustomApiMode
+  reasoning?: ReasoningConfig
 }
 
+export type SearchProvider = "tavily" | "serpapi" | "none"
+export type SerpApiEngine =
+  | "google"
+  | "google_news"
+  | "google_scholar"
+  | "google_patents"
+  | "bing"
+  | "duckduckgo"
+  | "google_images"
+  | "google_videos"
+  | "youtube"
+  | string
+
+export interface SearchProviderOverride {
+  apiKey?: string
+  serpApiEngine?: SerpApiEngine
+}
+
+export type SearchProviderConfigs = Partial<Record<Exclude<SearchProvider, "none">, SearchProviderOverride>>
+
 interface SearchApiConfig {
-  provider: "tavily" | "none"
+  provider: SearchProvider
   apiKey: string
+  serpApiEngine?: SerpApiEngine
+  providerConfigs?: SearchProviderConfigs
 }
 
 interface EmbeddingConfig {
@@ -122,6 +151,7 @@ type OutputLanguage =
   | "Italian"
   | "Russian"
   | "Arabic"
+  | "Persian"
   | "Hindi"
   | "Turkish"
   | "Dutch"
@@ -129,6 +159,7 @@ type OutputLanguage =
   | "Swedish"
   | "Indonesian"
   | "Thai"
+  | "Ukrainian"
 
 /**
  * Per-preset saved fields. Each entry survives turning the preset off
@@ -141,6 +172,7 @@ export interface ProviderOverride {
   baseUrl?: string           // customEndpoint for custom presets, ollamaUrl for ollama
   apiMode?: CustomApiMode
   maxContextSize?: number
+  reasoning?: ReasoningConfig
 }
 
 export type ProviderConfigs = Record<string, ProviderOverride>
@@ -212,6 +244,7 @@ export const useWikiStore = create<WikiState>((set) => ({
     model: "",
     ollamaUrl: "http://localhost:11434",
     customEndpoint: "",
+    reasoning: { mode: "auto" },
   },
   providerConfigs: {},
   activePresetId: null,
@@ -228,6 +261,8 @@ export const useWikiStore = create<WikiState>((set) => ({
   searchApiConfig: {
     provider: "none",
     apiKey: "",
+    serpApiEngine: "google",
+    providerConfigs: {},
   },
 
   embeddingConfig: {

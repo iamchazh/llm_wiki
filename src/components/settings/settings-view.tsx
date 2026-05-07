@@ -67,7 +67,6 @@ const CATEGORIES: Category[] = [
 
 function initialDraft(
   llm: ReturnType<typeof useWikiStore.getState>["llmConfig"],
-  search: ReturnType<typeof useWikiStore.getState>["searchApiConfig"],
   embed: ReturnType<typeof useWikiStore.getState>["embeddingConfig"],
   multimodal: ReturnType<typeof useWikiStore.getState>["multimodalConfig"],
   outputLanguage: ReturnType<typeof useWikiStore.getState>["outputLanguage"],
@@ -83,6 +82,7 @@ function initialDraft(
     customEndpoint: llm.customEndpoint,
     maxContextSize: llm.maxContextSize ?? 204800,
     apiMode: llm.apiMode,
+    reasoning: llm.reasoning,
     embeddingEnabled: embed.enabled,
     embeddingEndpoint: embed.endpoint,
     embeddingApiKey: embed.apiKey,
@@ -98,8 +98,6 @@ function initialDraft(
     multimodalCustomEndpoint: multimodal.customEndpoint,
     multimodalApiMode: multimodal.apiMode,
     multimodalConcurrency: multimodal.concurrency,
-    searchProvider: search.provider,
-    searchApiKey: search.apiKey,
     outputLanguage,
     maxHistoryMessages,
     proxyEnabled: proxy.enabled,
@@ -113,14 +111,13 @@ export function SettingsView() {
   const { t } = useTranslation()
   const llmConfig = useWikiStore((s) => s.llmConfig)
   const setLlmConfig = useWikiStore((s) => s.setLlmConfig)
-  const searchApiConfig = useWikiStore((s) => s.searchApiConfig)
-  const setSearchApiConfig = useWikiStore((s) => s.setSearchApiConfig)
   const embeddingConfig = useWikiStore((s) => s.embeddingConfig)
   const setEmbeddingConfig = useWikiStore((s) => s.setEmbeddingConfig)
   const multimodalConfig = useWikiStore((s) => s.multimodalConfig)
   const setMultimodalConfig = useWikiStore((s) => s.setMultimodalConfig)
   const outputLanguage = useWikiStore((s) => s.outputLanguage)
   const setOutputLanguage = useWikiStore((s) => s.setOutputLanguage)
+  const project = useWikiStore((s) => s.project)
   const proxyConfig = useWikiStore((s) => s.proxyConfig)
   const setProxyConfig = useWikiStore((s) => s.setProxyConfig)
   const maxHistoryMessages = useChatStore((s) => s.maxHistoryMessages)
@@ -140,7 +137,6 @@ export function SettingsView() {
   const [draft, setDraftState] = useState<SettingsDraft>(() =>
     initialDraft(
       llmConfig,
-      searchApiConfig,
       embeddingConfig,
       multimodalConfig,
       outputLanguage,
@@ -162,7 +158,6 @@ export function SettingsView() {
     setDraftState((prev) =>
       initialDraft(
         llmConfig,
-        searchApiConfig,
         embeddingConfig,
         multimodalConfig,
         outputLanguage,
@@ -173,7 +168,6 @@ export function SettingsView() {
     )
   }, [
     llmConfig,
-    searchApiConfig,
     embeddingConfig,
     multimodalConfig,
     outputLanguage,
@@ -188,7 +182,6 @@ export function SettingsView() {
   const handleSave = useCallback(async () => {
     const {
       saveLlmConfig,
-      saveSearchApiConfig,
       saveEmbeddingConfig,
       saveMultimodalConfig,
       saveOutputLanguage,
@@ -203,8 +196,8 @@ export function SettingsView() {
       customEndpoint: draft.customEndpoint,
       maxContextSize: draft.maxContextSize,
       apiMode: draft.provider === "custom" ? draft.apiMode : undefined,
+      reasoning: draft.reasoning,
     }
-    const newSearch = { provider: draft.searchProvider, apiKey: draft.searchApiKey }
     const newEmbed = {
       enabled: draft.embeddingEnabled,
       endpoint: draft.embeddingEndpoint,
@@ -239,14 +232,12 @@ export function SettingsView() {
 
     setLlmConfig(newLlm)
     await saveLlmConfig(newLlm)
-    setSearchApiConfig(newSearch)
-    await saveSearchApiConfig(newSearch)
     setEmbeddingConfig(newEmbed)
     await saveEmbeddingConfig(newEmbed)
     setMultimodalConfig(newMultimodal)
     await saveMultimodalConfig(newMultimodal)
     setOutputLanguage(draft.outputLanguage as typeof outputLanguage)
-    await saveOutputLanguage(draft.outputLanguage as typeof outputLanguage)
+    await saveOutputLanguage(draft.outputLanguage as typeof outputLanguage, project?.id)
     setProxyConfig(newProxy)
     await saveProxyConfig(newProxy)
     // Apply the proxy env vars LIVE so the next outbound request
@@ -270,12 +261,12 @@ export function SettingsView() {
   }, [
     draft,
     setLlmConfig,
-    setSearchApiConfig,
     setEmbeddingConfig,
     setOutputLanguage,
     setProxyConfig,
     setMaxHistoryMessages,
     outputLanguage,
+    project,
   ])
 
   const body = useMemo(() => {
@@ -290,7 +281,7 @@ export function SettingsView() {
       case "multimodal":
         return <MultimodalSection draft={draft} setDraft={setDraft} />
       case "web-search":
-        return <WebSearchSection draft={draft} setDraft={setDraft} />
+        return <WebSearchSection />
       case "network":
         return <NetworkSection draft={draft} setDraft={setDraft} />
       case "output":
