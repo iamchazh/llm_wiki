@@ -9,6 +9,7 @@ dist-ssr/
 # meant for the repo.
 dist-rc/
 *.tsbuildinfo
+testing-lib/
 
 # Rust build artifacts
 src-tauri/target/
@@ -49,3 +50,4 @@ pnpm-debug.log*
 # Brainstorm assets (not tracked in source control)
 .superpowers/
 .claude/
+src-tauri/Cargo.toml
