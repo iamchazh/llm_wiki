@@ -1,5 +1,8 @@
 import { readFile, writeFile, listDirectory } from "@/commands/fs"
 import { streamChat } from "@/lib/llm-client"
+import { chunkSourceForIngest, computeIngestChunkBudget } from "@/lib/ingest-chunker"
+import { analyzeChunkedSource } from "@/lib/ingest-mapreduce"
+import type { Chunk } from "@/lib/text-chunker"
 import type { LlmConfig } from "@/stores/wiki-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useChatStore } from "@/stores/chat-store"
@@ -247,6 +250,46 @@ export function parseFileBlocks(text: string): ParseFileBlocksResult {
  */
 export function languageRule(sourceContent: string = ""): string {
   return buildLanguageDirective(sourceContent)
+}
+
+/**
+ * Compose the source slab handed to the Step-2 Generation prompt.
+ *
+ * Single-chunk inputs pass through unchanged — this matches the
+ * pre-chunking behavior where Generation saw the full (possibly
+ * truncated) source.
+ *
+ * Multi-chunk inputs use the merged Step-1 analysis as the primary
+ * carrier of source-derived content; the slab itself becomes the
+ * first chunk's text plus an outline of the remaining chunks'
+ * heading paths. The whole slab is capped at the chunker's per-chunk
+ * char budget so the Generation call still fits the model's window.
+ */
+export function buildGenerationSourceSlab(
+  chunks: Chunk[],
+  llmConfig: LlmConfig,
+): string {
+  if (chunks.length === 0) return ""
+  if (chunks.length === 1) return chunks[0].text
+
+  const { chunkChars } = computeIngestChunkBudget(llmConfig.maxContextSize)
+  const head = chunks[0].text
+  const remainingHeadings = chunks
+    .slice(1)
+    .map((c, i) => {
+      const heading = c.headingPath.trim() || "(no heading)"
+      return `- Chunk ${i + 2}/${chunks.length}: ${heading}`
+    })
+    .join("\n")
+  const slab = [
+    head,
+    "",
+    "## Outline of remaining chunks",
+    "",
+    remainingHeadings,
+  ].join("\n")
+  if (slab.length <= chunkChars) return slab
+  return slab.slice(0, chunkChars) + "\n\n[...remaining chunks summarized in Stage 1 analysis...]"
 }
 
 /**
@@ -506,41 +549,59 @@ async function autoIngestImpl(
     }
   }
 
-  const truncatedContent = enrichedSourceContent.length > 50000
-    ? enrichedSourceContent.slice(0, 50000) + "\n\n[...truncated...]"
-    : enrichedSourceContent
+  // Split the source into ingest-sized semantic chunks. The chunker
+  // splits at heading > paragraph > sentence boundaries (never tearing
+  // fenced code blocks or pipe tables) and sizes each chunk against
+  // the active LLM's context window. Short documents come back as a
+  // single chunk — the analysis stage short-circuits to one call in
+  // that case, matching the pre-chunking single-pass behavior.
+  const sourceChunks = chunkSourceForIngest(enrichedSourceContent, llmConfig.maxContextSize)
 
-  // ── Step 1: Analysis ──────────────────────────────────────────
-  // LLM reads the source and produces a structured analysis:
-  // key entities, concepts, main arguments, connections to existing wiki, contradictions
+  // ── Step 1: Analysis (map-reduce over chunks) ─────────────────
+  // For multi-chunk inputs: per-chunk Analysis (map) then a synthesis
+  // call (reduce). Errors abort via thrown rejection — the outer queue
+  // runner's catch will then mark the task for retry.
   activity.updateItem(activityId, { detail: "Step 1/2: Analyzing source..." })
 
   let analysis = ""
-
-  await streamChat(
-    llmConfig,
-    [
-      { role: "system", content: buildAnalysisPrompt(purpose, index, truncatedContent) },
-      { role: "user", content: `Analyze this source document:\n\n**File:** ${fileName}${folderContext ? `\n**Folder context:** ${folderContext}` : ""}\n\n---\n\n${truncatedContent}` },
-    ],
-    {
-      onToken: (token) => { analysis += token },
-      onDone: () => {},
-      onError: (err) => {
-        activity.updateItem(activityId, { status: "error", detail: `Analysis failed: ${err.message}` })
+  try {
+    analysis = await analyzeChunkedSource(
+      sourceChunks,
+      llmConfig,
+      {
+        buildAnalysisPrompt,
+        purpose,
+        index,
+        fileName,
+        folderContext,
       },
-    },
-    signal,
-    { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 4096 },
-  )
-
-  // A silent `return []` here would look like success to the queue
-  // runner and cause the task to be filter()'d out. Throw instead so
-  // processNext's catch-block path (retry / mark failed) engages.
-  const analysisActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
-  if (analysisActivity?.status === "error") {
-    throw new Error(analysisActivity.detail || "Analysis stream failed")
+      signal,
+      (p) => {
+        if (p.phase === "map" && p.total > 1) {
+          activity.updateItem(activityId, {
+            detail: `Step 1/2: Analyzing chunk ${p.current}/${p.total}...`,
+          })
+        } else if (p.phase === "reduce") {
+          activity.updateItem(activityId, {
+            detail: "Step 1/2: Synthesizing analysis...",
+          })
+        }
+      },
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    activity.updateItem(activityId, { status: "error", detail: `Analysis failed: ${msg}` })
+    throw err instanceof Error ? err : new Error(msg)
   }
+
+  // Source slab passed to Step 2. For single-chunk docs that's the
+  // chunk itself (matches today's truncated behavior). For multi-chunk
+  // docs it's the first chunk plus an outline of the remaining chunks'
+  // headings, capped at the chunker's per-chunk budget so we don't
+  // blow the model's window. Generation works primarily off the
+  // synthesized analysis at that point — the source slab is anchor
+  // text, not the full corpus.
+  const generationSourceContent = buildGenerationSourceSlab(sourceChunks, llmConfig)
 
   // ── Step 2: Generation ────────────────────────────────────────
   // LLM takes the analysis as context and produces wiki files + review items
@@ -551,7 +612,7 @@ async function autoIngestImpl(
   await streamChat(
     llmConfig,
     [
-      { role: "system", content: buildGenerationPrompt(schema, purpose, index, fileName, overview, truncatedContent) },
+      { role: "system", content: buildGenerationPrompt(schema, purpose, index, fileName, overview, generationSourceContent) },
       {
         role: "user",
         content: [
@@ -567,7 +628,7 @@ async function autoIngestImpl(
           "",
           "## Original Source Content",
           "",
-          truncatedContent,
+          generationSourceContent,
           "",
           "---",
           "",

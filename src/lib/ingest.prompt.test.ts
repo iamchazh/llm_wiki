@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { buildAnalysisPrompt, buildGenerationPrompt } from "./ingest"
+import {
+  buildAnalysisPrompt,
+  buildGenerationPrompt,
+  buildGenerationSourceSlab,
+} from "./ingest"
+import type { Chunk } from "@/lib/text-chunker"
 import { useWikiStore } from "@/stores/wiki-store"
 
 beforeEach(() => {
@@ -91,5 +96,67 @@ describe("analysis + generation prompt consistency", () => {
     const generation = buildGenerationPrompt("", "", "", "f.pdf", undefined, korean)
     expect(analysis).toContain("MANDATORY OUTPUT LANGUAGE: Korean")
     expect(generation).toContain("MANDATORY OUTPUT LANGUAGE: Korean")
+  })
+})
+
+describe("buildGenerationSourceSlab — chunk-aware Step-2 source", () => {
+  const llmConfig = {
+    provider: "openai" as const,
+    apiKey: "k",
+    model: "m",
+    ollamaUrl: "",
+    customEndpoint: "",
+    maxContextSize: 200_000,
+  }
+
+  function chunk(text: string, index: number, headingPath = ""): Chunk {
+    return {
+      index,
+      text,
+      headingPath,
+      charStart: 0,
+      charEnd: text.length,
+      oversized: false,
+    }
+  }
+
+  it("returns empty string for no chunks", () => {
+    expect(buildGenerationSourceSlab([], llmConfig)).toBe("")
+  })
+
+  it("passes a single chunk through untouched (matches today's single-pass)", () => {
+    const text = "# Title\n\nFull source body."
+    const slab = buildGenerationSourceSlab([chunk(text, 0)], llmConfig)
+    expect(slab).toBe(text)
+  })
+
+  it("for multi-chunk input, prepends the first chunk and outlines the rest", () => {
+    const slab = buildGenerationSourceSlab(
+      [
+        chunk("first chunk body", 0, "## Intro"),
+        chunk("second chunk body", 1, "## Methods"),
+        chunk("third chunk body", 2, "## Results > ### Table 1"),
+      ],
+      llmConfig,
+    )
+    expect(slab).toContain("first chunk body")
+    expect(slab).toContain("Outline of remaining chunks")
+    expect(slab).toContain("Methods")
+    expect(slab).toContain("Results > ### Table 1")
+    // Subsequent chunk bodies are NOT included verbatim — only their
+    // heading paths — because Stage-1 analysis already extracted them.
+    expect(slab).not.toContain("second chunk body")
+    expect(slab).not.toContain("third chunk body")
+  })
+
+  it("caps the slab at the chunker's per-chunk char budget", () => {
+    const huge = "x".repeat(500_000)
+    const slab = buildGenerationSourceSlab(
+      [chunk(huge, 0, "## A"), chunk("b", 1, "## B")],
+      llmConfig,
+    )
+    // 200K maxContextSize → ~120K chunkChars cap. Slab must be <=
+    // budget + a small overflow for the trailing summary marker.
+    expect(slab.length).toBeLessThanOrEqual(120_500)
   })
 })

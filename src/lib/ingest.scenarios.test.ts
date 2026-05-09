@@ -196,3 +196,131 @@ describe("ingest scenarios (fixture-driven)", () => {
     },
   )
 })
+
+describe("ingest long-document map-reduce", () => {
+  // Builds a synthetic long markdown source with multiple `##` sections,
+  // each well over the 30K-char chunk size implied by the test
+  // llmConfig's 100K maxContextSize. The chunker should produce 3+
+  // chunks; analyzeChunkedSource should fire one streamChat call per
+  // chunk plus one reduce call; Step-2 Generation makes the final call.
+  it("calls streamChat once per chunk + once for reduce + once for generation", async () => {
+    // Reset the streamChat mock — it's shared with the fixture-driven
+    // tests above, and we need to count only the calls this test makes.
+    const { streamChat: streamChatMock } = await import("./llm-client")
+    ;(streamChatMock as unknown as { mockClear: () => void }).mockClear()
+
+    const tmp = await createTempProject("ingest-longdoc")
+    ctx = { tmp }
+
+    // Minimal wiki layout — must exist for the index/overview reads
+    // and the writes to succeed.
+    await fs.mkdir(path.join(tmp.path, "wiki"), { recursive: true })
+    await fs.writeFile(path.join(tmp.path, "wiki", "index.md"), "# Index\n")
+    await fs.writeFile(path.join(tmp.path, "wiki", "overview.md"), "# Overview\n")
+    await fs.writeFile(path.join(tmp.path, "schema.md"), "")
+    await fs.writeFile(path.join(tmp.path, "purpose.md"), "")
+
+    // ~150K-char doc with 3 distinct headings, well above the per-chunk
+    // budget computed from a 100K-char maxContextSize.
+    const section = (h: string, n: number) =>
+      `## ${h}\n\n` + "Lorem ipsum dolor sit amet. ".repeat(n) + "\n\n"
+    const body =
+      "# Long synthetic doc\n\n" +
+      section("Section A", 1_800) +
+      section("Section B", 1_800) +
+      section("Section C", 1_800)
+
+    await fs.mkdir(path.join(tmp.path, "raw"), { recursive: true })
+    const sourcePath = path.join(tmp.path, "raw", "long.md")
+    await fs.writeFile(sourcePath, body)
+
+    useWikiStore.setState({
+      project: {
+        name: "t",
+        path: tmp.path,
+        createdAt: 0,
+        purposeText: "",
+        fileTree: [],
+      } as unknown as ReturnType<typeof useWikiStore.getState>["project"],
+    })
+    useWikiStore.getState().setLlmConfig({
+      provider: "openai",
+      apiKey: "k",
+      model: "m",
+      ollamaUrl: "",
+      customEndpoint: "",
+      maxContextSize: 100_000,
+    })
+
+    // Per-chunk analyses, one synthesis, one generation. We don't care
+    // what the LLM "says" — we care that the right number of calls
+    // happen and that the synthesis call sees output from each chunk.
+    const generationBlock = [
+      "---FILE: wiki/sources/long.md---",
+      "---",
+      'type: source',
+      'title: "Source: long.md"',
+      "created: 2026-05-08",
+      "updated: 2026-05-08",
+      'sources: ["long.md"]',
+      "tags: []",
+      "related: []",
+      "---",
+      "",
+      "# Long doc summary",
+      "Body.",
+      "---END FILE---",
+      "",
+    ].join("\n")
+
+    // Generous response queue — chunker may produce more than 3 chunks
+    // depending on heading/paragraph splits. Per-chunk responses include
+    // a unique marker so we can assert all of them flow into the reduce.
+    pendingResponses = [
+      "MAP-1: chunk 1 analysis content.",
+      "MAP-2: chunk 2 analysis content.",
+      "MAP-3: chunk 3 analysis content.",
+      "MAP-4: chunk 4 analysis content.",
+      "MAP-5: chunk 5 analysis content.",
+      "MAP-6: chunk 6 analysis content.",
+      "REDUCE: merged analysis covering all sections.",
+      generationBlock,
+    ]
+
+    await autoIngest(tmp.path, sourcePath, useWikiStore.getState().llmConfig)
+
+    const { streamChat } = await import("./llm-client")
+    const mock = streamChat as unknown as { mock: { calls: unknown[][] } }
+    // N chunks → N map + 1 reduce + 1 generation. With this synthetic
+    // ~150K-char doc on a 100K maxContextSize, expect at least 3 map
+    // calls (sometimes more if the splitter finds good boundaries).
+    expect(mock.mock.calls.length).toBeGreaterThanOrEqual(5)
+
+    // Find the reduce call: it's the one whose system prompt mentions
+    // "consolidating multiple partial analyses". Same property the
+    // mapreduce unit test pins down, but here verified through the
+    // real autoIngest pipeline.
+    const reduceCall = mock.mock.calls.find((call) => {
+      const messages = call[1] as Array<{ role: string; content: string }>
+      const sys = messages.find((m) => m.role === "system")?.content ?? ""
+      return sys.includes("consolidating multiple partial analyses")
+    })
+    expect(reduceCall, "expected a reduce call in streamChat history").toBeDefined()
+    const reduceMessages = reduceCall![1] as Array<{ role: string; content: string }>
+    const reduceUser = reduceMessages.find((m) => m.role === "user")?.content ?? ""
+    expect(reduceUser).toContain("MAP-1")
+    expect(reduceUser).toContain("MAP-2")
+    expect(reduceUser).toContain("MAP-3")
+
+    // No `[...truncated...]` marker should leak into wiki output —
+    // that's the marker the old 50K hard-truncation used.
+    const generatedFiles = await fs.readdir(path.join(tmp.path, "wiki", "sources"))
+    for (const f of generatedFiles) {
+      const content = await fs.readFile(
+        path.join(tmp.path, "wiki", "sources", f),
+        "utf-8",
+      )
+      expect(content).not.toContain("[...truncated...]")
+    }
+  })
+})
