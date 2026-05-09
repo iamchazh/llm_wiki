@@ -84,6 +84,7 @@ function initialDraft(
     apiMode: llm.apiMode,
     reasoning: llm.reasoning,
     embeddingEnabled: embed.enabled,
+    embeddingPresetId: embed.presetId,
     embeddingEndpoint: embed.endpoint,
     embeddingApiKey: embed.apiKey,
     embeddingModel: embed.model,
@@ -200,6 +201,7 @@ export function SettingsView() {
     }
     const newEmbed = {
       enabled: draft.embeddingEnabled,
+      presetId: draft.embeddingPresetId,
       endpoint: draft.embeddingEndpoint,
       apiKey: draft.embeddingApiKey,
       model: draft.embeddingModel,

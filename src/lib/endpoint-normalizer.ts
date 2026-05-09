@@ -133,3 +133,117 @@ export function normalizeEndpoint(raw: string, mode: EndpointMode): NormalizedEn
     warning: notes.length ? notes.join(" ") : undefined,
   }
 }
+
+/**
+ * Normalize an embedding endpoint URL.
+ *
+ * Unlike the chat-completions normalizer, the embedding wire is the
+ * full request URL (including the path) — the fetch layer doesn't
+ * append anything. So:
+ *
+ *   - `/v1/embeddings` and `/v1/embed` (Cohere) are valid request
+ *     paths and stay as-is.
+ *   - A bare `/v1` is auto-extended to `/v1/embeddings` because
+ *     that's almost certainly what the user meant.
+ *   - A bare host warns — different vendors mount the API at
+ *     different sub-paths (Cohere: `/v1/embed`, OpenAI: `/v1/embeddings`,
+ *     llama.cpp: `/v1/embeddings` or `/embeddings` depending on flags),
+ *     so we can't pick one for them.
+ *   - Trailing slashes always strip.
+ */
+export function normalizeEmbeddingEndpoint(raw: string): NormalizedEndpoint {
+  const trimmed = (raw ?? "").trim()
+  if (!trimmed) return { normalized: "", changed: false }
+
+  const missingProtocol = !/^https?:\/\//i.test(trimmed)
+  if (missingProtocol) {
+    const stripped = trimmed.replace(/\/+$/, "")
+    return {
+      normalized: stripped,
+      changed: stripped !== trimmed,
+      warning: "URL should start with http:// or https://",
+    }
+  }
+
+  let parsed: URL | null = null
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    const stripped = trimmed.replace(/\/+$/, "")
+    return {
+      normalized: stripped,
+      changed: stripped !== trimmed,
+      warning: "URL is not well-formed — check for typos in the host / port / path.",
+    }
+  }
+
+  const host = parsed.hostname
+  const notes: string[] = []
+  const looksNumericDotted = /^\d+(?:\.\d+)+$/.test(host)
+  if (looksNumericDotted) {
+    const octets = host.split(".")
+    const validIpv4 =
+      octets.length === 4 &&
+      octets.every((o) => {
+        const n = Number(o)
+        return Number.isInteger(n) && n >= 0 && n <= 255
+      })
+    if (!validIpv4) {
+      notes.push(
+        `Host "${host}" looks like an IPv4 address but has ${octets.length} octets (valid IPv4 has exactly 4, each 0-255).`,
+      )
+    }
+  }
+
+  let url = trimmed.replace(/\/+$/, "")
+
+  // Already a valid embeddings path — leave alone.
+  const hasEmbeddingsPath = /\/v\d+\/(embeddings|embed)\/?$/i.test(url)
+  if (hasEmbeddingsPath) {
+    const changed = url !== trimmed
+    return {
+      normalized: url,
+      changed,
+      warning: notes.length ? notes.join(" ") : undefined,
+    }
+  }
+
+  // Bare `/v1` (or `/v2`, etc.) — auto-append `/embeddings`. This is
+  // by far the most common shape users paste from a vendor's docs.
+  const versionTail = url.match(/\/(v\d+)$/i)
+  if (versionTail) {
+    url = `${url}/embeddings`
+    notes.push(
+      `appended "/embeddings" to the version segment — this is the OpenAI-compatible request path.`,
+    )
+    return {
+      normalized: url,
+      changed: true,
+      warning: notes.join(" "),
+    }
+  }
+
+  // Bare host or arbitrary base — warn but don't auto-pick a path.
+  try {
+    const u = new URL(url)
+    const pathname = u.pathname.replace(/\/+$/, "")
+    if (pathname === "" || pathname === "/") {
+      notes.push(
+        'URL has no embeddings path — most servers expect "/v1/embeddings" (Cohere uses "/v1/embed"). Double-check the provider\'s docs.',
+      )
+    } else if (!/\/v\d+/.test(pathname)) {
+      notes.push(
+        'URL has no version segment (expected e.g. "/v1/embeddings"). Double-check the provider\'s docs.',
+      )
+    }
+  } catch {
+    // already handled above
+  }
+
+  const changed = url !== trimmed
+  return {
+    normalized: url,
+    changed,
+    warning: notes.length ? notes.join(" ") : undefined,
+  }
+}

@@ -59,6 +59,12 @@ interface EmbeddingConfig {
   apiKey: string
   model: string // e.g. "text-embedding-qwen3-embedding-0.6b"
   /**
+   * Active preset id from `src/components/settings/embedding-presets.ts`.
+   * Optional / additive — pre-presets configs (and the "Custom" preset)
+   * leave it undefined and the UI reverse-looks up via `matchEmbeddingPreset`.
+   */
+  presetId?: string
+  /**
    * Chunking knobs (Phase 1 RAG). Undefined values fall back to the
    * chunker's built-in defaults in `src/lib/text-chunker.ts`:
    *   targetChars   1000

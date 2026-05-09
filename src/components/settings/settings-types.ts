@@ -20,6 +20,7 @@ export interface SettingsDraft {
 
   // Embedding
   embeddingEnabled: boolean
+  embeddingPresetId: string | undefined
   embeddingEndpoint: string
   embeddingApiKey: string
   embeddingModel: string

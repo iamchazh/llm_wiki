@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { normalizeEndpoint } from "./endpoint-normalizer"
+import { normalizeEndpoint, normalizeEmbeddingEndpoint } from "./endpoint-normalizer"
 
 describe("normalizeEndpoint — chat_completions mode", () => {
   it("leaves a well-formed URL untouched", () => {
@@ -183,5 +183,80 @@ describe("normalizeEndpoint — URL well-formedness catches", () => {
   it("accepts localhost host (non-IP) without flagging", () => {
     const r = normalizeEndpoint("http://localhost:11434/v1", "chat_completions")
     expect(r.warning).toBeUndefined()
+  })
+})
+
+describe("normalizeEmbeddingEndpoint", () => {
+  it("leaves a well-formed /v1/embeddings URL untouched", () => {
+    const r = normalizeEmbeddingEndpoint("http://127.0.0.1:8080/v1/embeddings")
+    expect(r.normalized).toBe("http://127.0.0.1:8080/v1/embeddings")
+    expect(r.changed).toBe(false)
+    expect(r.warning).toBeUndefined()
+  })
+
+  it("leaves Cohere's /v1/embed path alone", () => {
+    const r = normalizeEmbeddingEndpoint("https://api.cohere.ai/v1/embed")
+    expect(r.normalized).toBe("https://api.cohere.ai/v1/embed")
+    expect(r.changed).toBe(false)
+    expect(r.warning).toBeUndefined()
+  })
+
+  it("strips a trailing slash on a valid embeddings URL", () => {
+    const r = normalizeEmbeddingEndpoint("http://127.0.0.1:8080/v1/embeddings/")
+    expect(r.normalized).toBe("http://127.0.0.1:8080/v1/embeddings")
+    expect(r.changed).toBe(true)
+  })
+
+  it("appends /embeddings to a bare /v1 path", () => {
+    const r = normalizeEmbeddingEndpoint("https://api.openai.com/v1")
+    expect(r.normalized).toBe("https://api.openai.com/v1/embeddings")
+    expect(r.changed).toBe(true)
+    expect(r.warning).toMatch(/embeddings/)
+  })
+
+  it("appends /embeddings to a bare /v4 path (non-OpenAI versioning)", () => {
+    const r = normalizeEmbeddingEndpoint("https://open.bigmodel.cn/api/paas/v4")
+    expect(r.normalized).toBe("https://open.bigmodel.cn/api/paas/v4/embeddings")
+    expect(r.changed).toBe(true)
+  })
+
+  it("warns on a bare-host URL with no path", () => {
+    const r = normalizeEmbeddingEndpoint("https://api.openai.com")
+    expect(r.normalized).toBe("https://api.openai.com")
+    expect(r.warning).toBeDefined()
+    expect(r.warning!.toLowerCase()).toMatch(/embeddings|version/)
+  })
+
+  it("warns on a host with a non-version subpath", () => {
+    const r = normalizeEmbeddingEndpoint("https://api.openai.com/foo")
+    expect(r.warning).toBeDefined()
+    expect(r.warning!.toLowerCase()).toMatch(/version/)
+  })
+
+  it("warns when protocol is missing", () => {
+    const r = normalizeEmbeddingEndpoint("api.openai.com/v1/embeddings")
+    expect(r.warning).toMatch(/https?:\/\//i)
+  })
+
+  it("handles empty / whitespace input", () => {
+    expect(normalizeEmbeddingEndpoint("").normalized).toBe("")
+    expect(normalizeEmbeddingEndpoint("   ").normalized).toBe("")
+  })
+
+  it("strips enclosing whitespace", () => {
+    const r = normalizeEmbeddingEndpoint("  http://127.0.0.1:8080/v1/embeddings  ")
+    expect(r.normalized).toBe("http://127.0.0.1:8080/v1/embeddings")
+  })
+
+  it("flags a 5-octet IP-shaped host", () => {
+    const r = normalizeEmbeddingEndpoint("http://192.168.1.1.50:8080/v1/embeddings")
+    expect(r.warning).toBeDefined()
+    expect(r.warning!.toLowerCase()).toMatch(/well-formed|typo|ipv4|octets/)
+  })
+
+  it("accepts a well-formed IPv4 host with port and embeddings path", () => {
+    const r = normalizeEmbeddingEndpoint("http://192.168.1.50:8080/v1/embeddings")
+    expect(r.warning).toBeUndefined()
+    expect(r.normalized).toBe("http://192.168.1.50:8080/v1/embeddings")
   })
 })
