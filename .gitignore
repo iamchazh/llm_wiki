@@ -51,3 +51,4 @@ pnpm-debug.log*
 .superpowers/
 .claude/
 src-tauri/Cargo.toml
+.serena/project.yml
